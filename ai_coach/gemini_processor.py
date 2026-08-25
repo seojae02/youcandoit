@@ -1,150 +1,143 @@
-import google.generativeai as genai
-import os
+"""Gemini 로 예상 질문과 종합 피드백을 생성한다."""
+
 import json
+import os
+from pathlib import Path
+
+import google.generativeai as genai
 from dotenv import load_dotenv
 
-# 1. 환경 변수 로드 (key.env 파일 필요)
-load_dotenv(dotenv_path="key.env")
+BASE_DIR = Path(__file__).resolve().parent
 
-# 2. API 키 설정
-try:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        print("⚠️ 경고: GEMINI_API_KEY가 설정되지 않았습니다.")
-    else:
-        genai.configure(api_key=api_key)
-except Exception as e:
-    print(f"오류: API 설정 중 문제 발생 {e}")
+# 실행 위치와 무관하게 ai_coach/key.env 를 읽는다
+load_dotenv(dotenv_path=BASE_DIR / "key.env")
 
-# 3. 모델 로드 (최신 모델 우선 시도)
-try:
-    model = genai.GenerativeModel('gemini-2.5-pro')
-except:
+API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# 앞에서부터 시도하고 실패하면 다음으로 넘어간다.
+# 주의: GenerativeModel(...) 은 객체만 만들 뿐 네트워크를 타지 않는다.
+# 그래서 모델 가용성은 실제 호출 시점에만 판별할 수 있고,
+# 폴백도 호출부에서 처리해야 한다.
+MODEL_CANDIDATES = [
+    m.strip()
+    for m in os.getenv(
+        "GEMINI_MODELS", "gemini-3.6-flash,gemini-flash-latest,gemini-2.5-flash"
+    ).split(",")
+    if m.strip()
+]
+
+if API_KEY:
+    genai.configure(api_key=API_KEY)
+else:
+    print("경고: GEMINI_API_KEY 가 설정되지 않았습니다. ai_coach/key.env 를 확인하세요.")
+
+
+class GeminiUnavailable(RuntimeError):
+    pass
+
+
+def _generate(prompt: str, *, as_json: bool = False) -> str:
+    """모델 목록을 순서대로 시도한다. 전부 실패하면 예외를 던진다."""
+    if not API_KEY:
+        raise GeminiUnavailable("GEMINI_API_KEY 가 없습니다.")
+
+    config = {"response_mime_type": "application/json"} if as_json else None
+    errors = []
+
+    for name in MODEL_CANDIDATES:
+        try:
+            model = genai.GenerativeModel(name)
+            response = model.generate_content(prompt, generation_config=config)
+            text = (response.text or "").strip()
+            if text:
+                return text
+            errors.append(f"{name}: 빈 응답")
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+
+    raise GeminiUnavailable("모든 모델 호출이 실패했습니다 — " + " | ".join(errors))
+
+
+# ============================================================
+# [API 1] 자기소개서 → 예상 질문
+# ============================================================
+
+def generate_questions_from_resume(resume_text: str) -> list[str]:
+    prompt = f"""당신은 면접관입니다. 아래 자기소개서를 읽고 지원자의 역량과 경험을
+검증할 수 있는 핵심 면접 질문 3가지를 뽑아주세요.
+
+반드시 아래 형식의 JSON 으로만 답하세요.
+{{"questions": ["질문1", "질문2", "질문3"]}}
+
+--- 자기소개서 ---
+{resume_text}
+---"""
+
+    # 형식을 프롬프트로 부탁하는 대신 JSON 모드로 강제한다.
+    # 예전에는 응답 문자열을 ast.literal_eval 로 파싱했는데,
+    # 모델이 형식을 조금만 벗어나도 전부 실패했다.
+    raw = _generate(prompt, as_json=True)
+
     try:
-        model = genai.GenerativeModel('gemini-pro')
-    except Exception as e:
-        print(f"모델 로드 실패: {e}")
-        model = None
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise GeminiUnavailable(f"응답을 JSON 으로 해석하지 못했습니다: {raw[:200]}") from exc
 
-def generate_questions_from_resume(resume_text: str) -> list:
-    """
-    [API 1] 자소서를 받아 핵심 면접 질문 3개를 리스트로 반환합니다.
-    """
-    if not model: return ["AI 모델이 로드되지 않았습니다."]
+    questions = data.get("questions") if isinstance(data, dict) else data
+    if not isinstance(questions, list) or not questions:
+        raise GeminiUnavailable(f"질문 목록을 찾지 못했습니다: {raw[:200]}")
 
-    prompt = f"""
-    당신은 면접관입니다. 아래 자기소개서를 읽고, 지원자의 역량과 경험을 검증할 수 있는 
-    '핵심 면접 질문' 3가지를 뽑아주세요.
-    
-    [조건]
-    1. 질문은 한국어로 작성하세요.
-    2. 서론이나 번호 매기기 없이, 오직 Python 리스트 문자열 형식으로만 답하세요.
-    3. 예시: ["질문 내용 1", "질문 내용 2", "질문 내용 3"]
+    return [str(q) for q in questions]
 
-    --- 자기소개서 ---
-    {resume_text}
-    ---
-    """
-    try:
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        
-        # 마크다운 코드 블록 제거
-        if text.startswith("```"):
-            text = text.replace("```json", "").replace("```python", "").replace("```", "").strip()
-        
-        # 문자열 -> 리스트 변환
-        import ast
-        questions = ast.literal_eval(text)
-        
-        if isinstance(questions, list):
-            return questions
-        return ["형식 오류: 질문 리스트를 생성하지 못했습니다."]
-            
-    except Exception as e:
-        print(f"❌ Gemini 질문 생성 오류: {e}")
-        return ["질문 생성 중 오류가 발생했습니다."]
 
-def get_comprehensive_feedback(qa_list, video_data: dict = None) -> str:
-    """
-    [API 3] Q&A 리스트와 비디오 데이터를 받아 종합 피드백을 생성합니다.
-    """
-    if not model: return "AI 모델이 로드되지 않았습니다."
+# ============================================================
+# [API 3] 답변 + 행동 데이터 → 종합 피드백
+# ============================================================
 
-    # 🔍 [데이터 전처리] 리스트인지 딕셔너리인지 확인하여 리스트로 통일
+def _format_qa(qa_list) -> str:
+    lines = []
+    for idx, item in enumerate(qa_list, 1):
+        if hasattr(item, "question"):
+            q, a = item.question, item.answer
+        elif isinstance(item, dict):
+            q = item.get("예상질문") or item.get("question") or item.get("질문") or ""
+            a = item.get("대답") or item.get("answer") or item.get("답변") or ""
+        else:
+            continue
+        lines.append(f"Q{idx}. {q}\nA{idx}. {a}")
+    return "\n\n".join(lines)
+
+
+def _format_video(video_data) -> str:
+    if not isinstance(video_data, dict) or "error" in video_data:
+        return "영상 분석 데이터가 없습니다."
+    return f"""- 어깨 이탈 횟수: {video_data.get('shoulder_tilt_count', 0)}회 (자세 불안정 지표)
+- 시선 이탈 횟수: {video_data.get('gaze_off_center_count', 0)}회 (시선 불안정 지표)
+- 평균 미소 점수: {video_data.get('average_smile_score', 0)}점 (0~100, 높을수록 밝음)
+- 분당 눈 깜빡임: {video_data.get('average_blink_count', 0)}회 (높으면 긴장 신호)"""
+
+
+def get_comprehensive_feedback(qa_list, video_data: dict | None = None) -> str:
     if isinstance(qa_list, dict):
         qa_list = [qa_list]
-    
     if not isinstance(qa_list, list):
-        return "오류: 질문/답변 데이터 형식이 올바르지 않습니다."
+        raise ValueError("질문/답변 데이터 형식이 올바르지 않습니다.")
 
-    # 1. Q&A 텍스트 변환
-    qa_text_buffer = []
-    for idx, item in enumerate(qa_list, 1):
-        # item이 딕셔너리가 아닌 경우(문자열 등) 방어
-        if not isinstance(item, dict) and not hasattr(item, 'question'):
-            continue
+    prompt = f"""당신은 전문적인 AI 면접 코치입니다.
+지원자의 [답변 내용]과 AI 가 분석한 [행동 데이터]를 모두 고려해 종합 피드백을 주세요.
 
-        # Pydantic 객체(.attr) 또는 딕셔너리['key'] 모두 처리
-        if hasattr(item, 'question'):
-            q = item.question
-            a = item.answer
-        else:
-            # 딕셔너리일 경우 다양한 키 이름 대응 (예상질문, 질문, question 등)
-            q = item.get('예상질문') or item.get('question') or item.get('질문') or ''
-            a = item.get('대답') or item.get('answer') or item.get('답변') or ''
-            
-        qa_text_buffer.append(f"Q{idx}. {q}\nA{idx}. {a}")
-    
-    qa_text = "\n\n".join(qa_text_buffer)
+=== [1. 행동 분석 결과] ===
+{_format_video(video_data)}
 
-    # 2. 비디오 데이터 텍스트 변환
-    video_text = "영상 분석 데이터가 없습니다."
-    if video_data and isinstance(video_data, dict) and "error" not in video_data:
-        video_text = f"""
-        - 어깨 이탈 횟수: {video_data.get('shoulder_tilt_count', 0)}회 (자세 불안정 지표)
-        - 시선 이탈 횟수: {video_data.get('gaze_off_center_count', 0)}회 (시선 불안정 지표)
-        - 평균 미소 점수: {video_data.get('average_smile_score', 0)}점 (0~100점, 높을수록 긍정적)
-        - 분당 눈 깜빡임: {video_data.get('average_blink_count', 0)}회 (높으면 긴장됨)
-        """
+=== [2. 면접 질의응답] ===
+{_format_qa(qa_list)}
 
-    print(f"🔍 [DEBUG] Gemini 요청 데이터:\n{video_text}\n{qa_text[:100]}...")
+=== [작성 가이드] ===
+1. **논리성 및 적합성** — 답변이 질문 의도를 파악했는지, 구조가 잡혀 있는지
+2. **비언어적 태도** — 위 행동 데이터를 근거로 자세·시선·표정에 대해 구체적으로
+3. **발견된 강점** — 가장 돋보이는 점 한 가지
+4. **개선 제안** — 다음 면접에서 바로 적용할 수 있는 팁 1~2가지
 
-    # 3. 프롬프트 조합
-    prompt = f"""
-    당신은 전문적인 AI 면접 코치입니다.
-    지원자의 [답변 내용]과 AI가 분석한 [비디오 행동 데이터]를 모두 고려하여 종합 피드백을 주세요.
+말투는 지원자에게 직접 말하듯 부드러운 '해요체'를 사용하세요."""
 
-    === [1. 비디오 행동 분석 결과] ===
-    {video_text}
-
-    === [2. 면접 질의응답 내용] ===
-    {qa_text}
-
-    === [피드백 작성 가이드] ===
-    다음 4가지 항목에 맞춰 구체적으로 작성해주세요:
-    
-    1. **논리성 및 적합성**: 
-       - 답변들이 질문의 의도를 잘 파악하고 있는지, 논리적인 구조를 갖췄는지 평가해주세요.
-    
-    2. **비언어적 태도 피드백 (중요)**: 
-       - 위 [비디오 태도 분석 데이터]를 참고하여 자세, 시선, 표정에 대해 구체적으로 조언해주세요.
-       - 예: "시선 이탈이 5회로 다소 높습니다. 카메라를 좀 더 응시하세요."
-       - 예: "미소 점수가 높아서 인상이 좋습니다."
-    
-    3. **발견된 강점**: 
-       - 답변 전체에서 드러나는 지원자의 직무 역량이나 태도 중 가장 돋보이는 점 1가지를 칭찬해주세요.
-    
-    4. **종합 개선 제안 (Action Item)**: 
-       - 전체적으로 보완이 필요한 부분을 짚어주고, 다음 면접에서 바로 적용할 수 있는 구체적인 팁을 1~2가지 제안해주세요.
-    
-    *말투는 지원자에게 직접 말하듯이 부드럽고 격려하는 '해요체'를 사용하세요.
-    """
-    
-    try:
-        response = model.generate_content(prompt)
-        print("✅ 피드백 생성 완료")
-        return response.text
-    except Exception as e:
-        print(f"❌ Gemini 피드백 오류: {e}")
-        return "피드백 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+    return _generate(prompt)
