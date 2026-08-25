@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YouCanDoIt — 데모</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1b1e26; --line:#2b303c;
+    --ink:#e8eaf0; --dim:#8b93a7; --accent:#5b8cff; --warn:#ffb454; --ok:#4ec9a0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;padding:24px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:20px}
+  .grid{display:grid;grid-template-columns:minmax(320px,1.2fr) 1fr;gap:16px;align-items:start}
+  @media(max-width:840px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .panel h2{font-size:13px;color:var(--dim);margin:0 0 12px;font-weight:600;letter-spacing:.02em}
+  #feed{width:100%;border-radius:8px;background:#000;display:block;aspect-ratio:4/3;object-fit:contain}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .card{background:#161922;border:1px solid var(--line);border-radius:10px;padding:12px}
+  .card .label{font-size:12px;color:var(--dim)}
+  .card .val{font-size:26px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+  .card .unit{font-size:12px;color:var(--dim);font-weight:400;margin-left:3px}
+  .live{margin-top:12px;font-size:13px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .live b{color:var(--ink);font-weight:600}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  button{background:#252a36;color:var(--ink);border:1px solid var(--line);
+         border-radius:8px;padding:9px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.45;cursor:default}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#555;margin-right:6px}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  pre{background:#0e1016;border:1px solid var(--line);border-radius:8px;padding:12px;
+      font-size:12px;overflow:auto;max-height:260px;margin:10px 0 0;white-space:pre-wrap}
+  input[type=file]{font-size:13px;color:var(--dim);max-width:100%}
+  .note{font-size:12px;color:var(--dim);margin-top:10px;line-height:1.5}
+</style>
+</head>
+<body>
+
+<h1>YouCanDoIt — 데모 콘솔</h1>
+<div class="sub">서버 API 를 눈으로 확인하기 위한 페이지입니다. 실제 서비스 화면은 아닙니다.</div>
+
+<div class="grid">
+
+  <div class="panel">
+    <h2><span class="dot" id="feedDot"></span>실시간 스트림 · /video_feed</h2>
+    <img id="feed" alt="스트림이 시작되면 여기에 표시됩니다" />
+    <div class="row">
+      <button class="primary" id="btnStart">스트림 시작</button>
+      <button id="btnStop" disabled>중지</button>
+      <button id="btnReset">세션 리셋</button>
+    </div>
+    <div class="note">
+      웹캠이 없으면 서버를 <code>VIDEO_SOURCE=영상파일.mp4</code> 로 띄우세요.
+      영상 파일을 웹캠처럼 재생하면서 동일하게 지표를 계산합니다.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2><span class="dot" id="liveDot"></span>실시간 지표 · /api/analysis</h2>
+    <div class="cards">
+      <div class="card"><div class="label">어깨 이탈</div><div class="val" id="mShoulder">0<span class="unit">회</span></div></div>
+      <div class="card"><div class="label">시선 이탈</div><div class="val" id="mGaze">0<span class="unit">회</span></div></div>
+      <div class="card"><div class="label">눈 깜빡임</div><div class="val" id="mBlink">0<span class="unit">회</span></div></div>
+      <div class="card"><div class="label">분석 프레임</div><div class="val" id="mFrames">0</div></div>
+    </div>
+    <div class="live">
+      순간값 &nbsp; 어깨각 <b id="sShoulder">–</b> &nbsp;·&nbsp;
+      시선 <b id="sGaze">–</b> &nbsp;·&nbsp; 미소 <b id="sSmile">–</b>
+    </div>
+    <div class="row">
+      <button id="btnAudioStart">음성 분석 시작</button>
+      <button id="btnAudioStop">중지</button>
+    </div>
+    <div class="live" id="audioLine">음성: 대기 중</div>
+  </div>
+
+  <div class="panel" style="grid-column:1/-1">
+    <h2>녹화 영상 분석 · POST /api/analyze-video</h2>
+    <div class="row">
+      <input type="file" id="videoFile" accept="video/*" />
+      <button class="primary" id="btnAnalyze">분석</button>
+    </div>
+    <pre id="result">영상 파일을 골라 분석을 누르면 결과가 여기 표시됩니다.</pre>
+    <div class="note">면접이 끝난 뒤 녹화본을 넣는 <b>사후 배치 레이어</b>입니다. 위쪽 실시간 지표와 같은 분석 로직을 씁니다.</div>
+  </div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let polling = null;
+
+function setDot(el, on){ el.classList.toggle('on', !!on); }
+
+async function poll(){
+  try{
+    const r = await fetch('/api/analysis');
+    const d = await r.json();
+    const v = d.video, a = d.audio;
+
+    $('mShoulder').innerHTML = v.shoulder_tilt_count + '<span class="unit">회</span>';
+    $('mGaze').innerHTML     = v.gaze_off_center_count + '<span class="unit">회</span>';
+    $('mBlink').innerHTML    = v.blink_count + '<span class="unit">회</span>';
+    $('mFrames').textContent = v.analyzed_frames;
+
+    $('sShoulder').textContent = v.shoulder_angle + '°';
+    $('sGaze').textContent     = v.gaze_score;
+    $('sSmile').textContent    = v.smile_score;
+
+    setDot($('liveDot'), v.is_running);
+    setDot($('feedDot'), v.is_running);
+
+    $('audioLine').textContent = a.is_running
+      ? `음성: ${a.transcription || '(인식 대기)'} · ${a.speaking_speed_epm} 어절/분 · 군말 ${a.filler_word_count}`
+      : '음성: 대기 중';
+  }catch(e){ /* 서버가 잠깐 막혀도 폴링은 계속한다 */ }
+}
+
+$('btnStart').onclick = () => {
+  $('feed').src = '/video_feed?t=' + Date.now();
+  $('btnStart').disabled = true; $('btnStop').disabled = false;
+  if(!polling) polling = setInterval(poll, 500);
+  poll();
+};
+
+$('btnStop').onclick = () => {
+  $('feed').removeAttribute('src');
+  $('btnStart').disabled = false; $('btnStop').disabled = true;
+  setTimeout(poll, 300);
+};
+
+$('btnReset').onclick = async () => {
+  await fetch('/api/session/reset', {method:'POST'});
+  poll();
+};
+
+$('btnAudioStart').onclick = async () => {
+  const r = await fetch('/api/audio/start', {method:'POST'});
+  const d = await r.json();
+  if(!r.ok) $('audioLine').textContent = '음성: ' + (d.detail || '시작 실패');
+};
+
+$('btnAudioStop').onclick = async () => {
+  await fetch('/api/audio/stop', {method:'POST'});
+  poll();
+};
+
+$('btnAnalyze').onclick = async () => {
+  const f = $('videoFile').files[0];
+  if(!f){ $('result').textContent = '영상 파일을 먼저 선택하세요.'; return; }
+
+  $('btnAnalyze').disabled = true;
+  $('result').textContent = `분석 중… (${f.name})\n프레임 수에 따라 시간이 걸립니다.`;
+
+  const fd = new FormData(); fd.append('file', f);
+  try{
+    const r = await fetch('/api/analyze-video', {method:'POST', body:fd});
+    const d = await r.json();
+    $('result').textContent = r.ok
+      ? JSON.stringify(d, null, 2)
+      : `HTTP ${r.status}\n${d.detail || ''}`;
+  }catch(e){
+    $('result').textContent = '요청 실패: ' + e;
+  }finally{
+    $('btnAnalyze').disabled = false;
+  }
+};
+
+polling = setInterval(poll, 500);
+poll();
+</script>
+</body>
+</html>
