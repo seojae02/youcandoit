@@ -1,7 +1,0 @@
-tensorflow
-librosa
-numpy
-matplotlib
-openai-whisper
-mediapipe
-
