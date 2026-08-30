@@ -1,7 +1,28 @@
+# --- 비밀정보 ---
+.env
+.env.local
+*.env
+!*.env.example
+key.env
+
+# --- Python ---
 venv/
+.venv/
 __pycache__/
 *.pyc
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+
+# --- 미디어 (분석 입출력) ---
 *.wav
 *.mp4
+
+# --- OS / 에디터 ---
 .DS_Store
-key.env
+.idea/
+.vscode/

@@ -90,15 +90,24 @@ YouCanDoIt은 이 두 가지를 함께 봅니다. 자기소개서를 넣으면 �
 
 | 영역 | 사용 기술 | 역할 |
 |---|---|---|
-| 서버 | FastAPI, Uvicorn | REST API, 파일 업로드, 스트리밍 |
+| 웹 | Next.js 16, TypeScript | 면접 화면, 실시간 지표 표시 |
+| 서버 | FastAPI, Uvicorn | REST API, 프레임·파일 분석 |
 | 영상 분석 | MediaPipe (Face / Pose Landmarker), OpenCV | 홍채·어깨·표정 좌표 추출 |
-| 음성 분석 | Whisper (로컬 `tiny` 모델), librosa | 음성→텍스트, 볼륨·피치 |
+| 음성 분석 | Whisper `tiny`, librosa | 음성→텍스트, 볼륨·피치 |
 | 피드백 생성 | Google Gemini | 질문 생성, 종합 코칭 리포트 |
 
-**Whisper는 API가 아니라 로컬 모델을 사용합니다.** 3초 단위로 잘라 처리해야 해서 호출 비용과 네트워크 지연을 피하는 쪽을 택했고, 그만큼 정확도를 양보하는 대신 가장 가벼운 `tiny` 모델을 썼습니다.
+**Whisper는 API를 호출하지 않고 모델을 직접 구동합니다.** 3초 단위로 잘라 처리해야 해서 호출 비용과 네트워크 지연을 피하는 쪽을 택했고, 그만큼 정확도를 양보하는 대신 가장 가벼운 `tiny` 모델을 썼습니다.
 
 ```
-ai_coach/
+web/                      Next.js — 사용자 화면
+└── src/
+    ├── app/              랜딩 · 면접 세션 · 결과 3페이지
+    └── lib/
+        ├── aiClient.ts   서버 호출 단일 창구 (한글 alias 매핑을 여기 가둠)
+        ├── session.ts    페이지 간 데이터 전달
+        └── speech.ts     Web Speech API 래퍼
+
+ai_coach/                 FastAPI — 분석 서버
 ├── main.py               FastAPI 진입점, API 라우팅
 ├── video_analyzer.py     영상 → 4가지 지표 산출
 ├── audio_analyzer.py     마이크 → STT · 볼륨 · 피치
@@ -115,21 +124,32 @@ ai_coach/
 
 ## 실행 방법
 
+### 1) 분석 서버
+
 ```bash
-# 1. 의존성 설치
-python3 -m venv venv
-source venv/bin/activate
+cd ai_coach
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. 서버 폴더로 이동
-cd ai_coach
-
-# 3. API 키 설정 — ai_coach/ 안에 key.env 생성
-echo 'GEMINI_API_KEY=발급받은_키' > key.env
-
-# 4. 서버 실행
+cp .env.example .env        # GEMINI_API_KEY 입력
 python main.py
 ```
+
+마이크를 쓰는 음성 분석까지 돌려보려면 `pip install -r requirements-local.txt` 를 추가로 실행합니다.
+
+### 2) 웹
+
+```bash
+cd web
+npm install
+cp .env.example .env.local  # 기본값이면 그대로 두면 됩니다
+npm run dev
+```
+
+`http://localhost:3000` 에서 카메라 권한을 허용하면 시작됩니다.
+자기소개서 없이 **기본 질문으로 시작**하면 AI 호출 없이 웹캠 평가만 확인할 수 있습니다.
+
+### 서버 동작만 확인하려면
 
 브라우저에서 `http://127.0.0.1:8000` 을 열면 **데모 콘솔**이 뜹니다.
 스트림을 켜고 실시간 지표가 올라가는 걸 보거나, 녹화 파일을 올려 분석해볼 수 있습니다.
@@ -162,14 +182,14 @@ MediaPipe 없이 따로 돌려볼 수 있는 테스트를 만들어 뒀습니다
 
 | 이름 | 기본값 | 설명 |
 |---|---|---|
-| `GEMINI_API_KEY` | — | Gemini API 키 (`ai_coach/key.env`) |
+| `GEMINI_API_KEY` | — | Gemini API 키 (`ai_coach/.env`) |
 | `VIDEO_SOURCE` | `0` | `0`은 웹캠, 파일 경로를 주면 그 영상을 사용 |
 | `REALTIME_DETECT_EVERY` | `3` | 실시간에서 몇 프레임마다 추론할지 |
 | `BATCH_FRAME_STRIDE` | `1` | 녹화 분석 시 프레임 건너뛰기 |
 | `ALLOWED_ORIGINS` | — | 쉼표로 구분한 프론트 주소. 지정하면 쿠키 인증 허용 |
 
 > **참고**
-> `key.env` 와 모델 파일 경로가 실행 위치를 기준으로 잡히므로 `ai_coach/` 안에서 실행해야 합니다.
+> `.env` 와 모델 파일 경로가 실행 위치를 기준으로 잡히므로 `ai_coach/` 안에서 실행해야 합니다.
 > MediaPipe 는 `1.0.x` 가 macOS 에서 Metal 초기화에 실패해 크래시하므로 `0.10.x` 로 고정했습니다.
 > 음성 분석은 `pyaudio` 설치가 까다로워 선택 기능입니다. 없어도 서버는 정상적으로 뜹니다
 > (macOS: `brew install portaudio` 후 `pip install pyaudio`).
@@ -181,6 +201,7 @@ MediaPipe 없이 따로 돌려볼 수 있는 테스트를 만들어 뒀습니다
 | 메서드 | 경로 | 하는 일 |
 |---|---|---|
 | `POST` | `/api/generate-questions` | 자기소개서 → 예상 질문 3개 |
+| `POST` | `/api/analyze-frame` | 프레임 1장 → 누적 지표 (브라우저가 1초마다 호출) |
 | `POST` | `/api/analyze-video` | 영상 파일 → 4가지 행동 지표 |
 | `POST` | `/api/final-feedback` | 질문·답변 + 행동 지표 → 종합 리포트 |
 | `GET` | `/video_feed` | MJPEG 스트림 (내보내면서 동시에 분석) |
@@ -189,9 +210,13 @@ MediaPipe 없이 따로 돌려볼 수 있는 테스트를 만들어 뒀습니다
 | `POST` | `/api/audio/start` · `/stop` | 실시간 음성 분석 제어 |
 | `GET` | `/api/health` | 서버·의존성 상태 확인 |
 
-프론트엔드는 `/video_feed` 를 `<img>` 로 띄우고 `/api/analysis` 를 주기적으로 폴링하면
-실시간 피드백 화면이 됩니다. 면접이 끝나면 녹화 파일을 `/api/analyze-video` 로 보내고,
-그 결과를 답변과 함께 `/api/final-feedback` 에 넘기면 리포트가 나옵니다.
+`/api/analyze-frame` 과 `/api/analyze-video` 는 **같은 `FrameAnalyzer` 를 공유합니다.**
+두 경로가 각자 판정 로직을 가지면 같은 영상인데도 화면에 뜨는 숫자와 최종 리포트의
+숫자가 어긋납니다.
+
+`/video_feed` 는 서버가 웹캠을 직접 여는 경로라 카메라가 없는 환경에서는 동작하지
+않습니다. 웹 화면은 브라우저가 카메라를 소유하고 `/api/analyze-frame` 으로 프레임을
+보내는 방식을 씁니다.
 
 ---
 
@@ -204,15 +229,19 @@ MediaPipe 없이 따로 돌려볼 수 있는 테스트를 만들어 뒀습니다
 | 자기소개서 기반 예상 질문 생성 | ✅ |
 | 녹화 영상 종합 분석 (4가지 지표) | ✅ |
 | 답변 + 행동 데이터 결합 코칭 리포트 | ✅ |
-| 실시간 스트리밍 + 지표 산출 | ✅ |
-| 실시간 음성 분석 (STT·볼륨·피치) | ✅ 서버 연동 완료, 마이크 실측은 미검증 |
-| 데모 콘솔 (동작 확인용) | ✅ `/` 에서 스트림·지표·업로드 확인 가능 |
-| **실제 서비스 프론트엔드** | ⏳ **없음 — 이 저장소는 서버와 데모 페이지까지입니다** |
+| 프레임 단위 실시간 지표 산출 | ✅ |
+| **면접 화면 (질문 → 답변 → 결과)** | ✅ `web/` |
+| 답변 받아쓰기 (Web Speech API) | ✅ Chrome · Edge |
+| 실시간 음성 분석 (STT·볼륨·피치) | 🔸 구현돼 있으나 기본 흐름에 미연결 |
+| 데모 콘솔 (서버 동작 확인용) | ✅ `/` |
+| **배포** | ⏳ 미완 |
 
-서버 쪽은 실시간 레이어와 사후 배치 레이어가 모두 동작하고,
-`/` 의 데모 콘솔에서 바로 확인할 수 있습니다.
-**아직 없는 것은 실제 사용자가 쓸 서비스 화면입니다.**
-데모 콘솔은 API 가 도는지 보여주는 용도라 면접 흐름(질문 제시 → 답변 → 리포트)은 담고 있지 않습니다.
+**AI 호출은 사용자가 누를 때만 일어납니다.** 웹캠 평가는 LLM 을 전혀 쓰지 않고,
+질문 생성과 코칭 리포트만 Gemini 를 호출합니다. 기본 질문으로 시작하면 AI 호출 없이
+평가 기능만 쓸 수 있습니다.
+
+음성 분석(`audio_analyzer.py`)은 서버가 마이크를 직접 열어야 해서 기본 흐름에서 빼두었습니다.
+답변 텍스트는 브라우저 Web Speech API 로 받습니다.
 
 ### 알고 있는 한계
 
@@ -229,10 +258,11 @@ MediaPipe 없이 따로 돌려볼 수 있는 테스트를 만들어 뒀습니다
 
 ## 앞으로
 
-1. 실시간 피드백 화면(프론트엔드) 구현 — 서버 API 는 준비되어 있습니다
-2. 지표별 처리 주기 분리로 분석 시간 단축
-3. 세션 단위 상태 분리로 동시 사용자 지원
-4. 사용 환경에 맞춰 임계값을 보정하는 캘리브레이션 단계 추가
+1. 배포 — Dockerfile 은 준비되어 있습니다
+2. 세션 단위 상태 분리로 동시 사용자 지원
+3. 음성 분석을 브라우저 캡처 방식으로 옮겨 기본 흐름에 연결
+4. 지표별 처리 주기 분리로 분석 시간 단축
+5. 사용 환경에 맞춰 임계값을 보정하는 캘리브레이션 단계 추가
 
 ---
 

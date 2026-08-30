@@ -1,9 +1,14 @@
-"""AI 면접 코치 서버.
+"""YouCanDoIt — AI 면접 코치 서버.
 
 [사후 배치 레이어]  POST /api/analyze-video   녹화 영상 → 4가지 지표
                     POST /api/final-feedback  답변 + 지표 → 코칭 리포트
-[실시간 레이어]     GET  /video_feed          MJPEG 스트림 (분석 동시 수행)
+[실시간 레이어]     POST /api/analyze-frame   브라우저가 보낸 프레임 1장 → 지표 갱신
                     GET  /api/analysis        현재까지의 실시간 지표
+
+[로컬 개발 전용]    GET  /video_feed          서버 웹캠 MJPEG 스트림
+                    POST /api/audio/start     서버 마이크
+    두 경로는 서버가 카메라·마이크를 직접 연다. 클라우드에는 두 장치가 없으므로
+    배포 환경에서는 쓰지 않는다. 배포본은 브라우저가 캡처해 analyze-frame 으로 보낸다.
 """
 
 import os
@@ -14,6 +19,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List
 
+import cv2
+import numpy as np
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,10 +33,12 @@ from gemini_processor import (
     generate_questions_from_resume,
     get_comprehensive_feedback,
 )
+from state_manager import update_video_data
 from video_analyzer import (
     analyze_video_file,
     cleanup_camera,
     generate_frames,
+    realtime_analyzer,
     reset_realtime,
 )
 
@@ -152,9 +161,33 @@ def api_final_feedback(request: FinalFeedbackRequest):
 # [실시간] 스트리밍 및 지표 조회
 # ============================================================
 
+@app.post("/api/analyze-frame")
+def api_analyze_frame(file: UploadFile = File(...)):
+    """브라우저가 캡처한 프레임 1장을 받아 실시간 지표를 갱신한다.
+
+    /video_feed 는 서버가 웹캠을 직접 열지만, 배포 환경에는 카메라가 없다.
+    그래서 캡처 주체를 브라우저로 뒤집고, 분석은 같은 FrameAnalyzer 를 쓴다.
+    녹화 분석·MJPEG 경로와 판정 로직이 하나로 유지된다.
+
+    async 를 쓰지 않는 것이 의도적이다. analyze-video 와 같은 이유로,
+    CPU 작업을 동기 함수로 두어야 FastAPI 가 스레드풀에서 실행해준다.
+    """
+    buf = np.frombuffer(file.file.read(), np.uint8)
+    frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="프레임을 디코딩할 수 없습니다.")
+
+    update_video_data(realtime_analyzer.process(frame))
+    update_video_data({"is_running": True})
+    return state_manager.get_all_data()
+
+
 @app.get("/video_feed")
 async def video_feed():
-    """MJPEG 스트림. 프레임을 내보내면서 동시에 지표를 계산한다."""
+    """[로컬 전용] MJPEG 스트림. 프레임을 내보내면서 동시에 지표를 계산한다.
+
+    서버가 웹캠을 직접 연다. 배포 환경에서는 동작하지 않는다.
+    """
     return StreamingResponse(
         generate_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
@@ -237,4 +270,10 @@ def read_root():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # 컨테이너에서는 0.0.0.0 으로 열려야 외부에서 닿는다.
+    # 플랫폼이 주입하는 PORT 를 그대로 따른다 (Fly.io / Cloud Run 공통).
+    uvicorn.run(
+        app,
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+    )

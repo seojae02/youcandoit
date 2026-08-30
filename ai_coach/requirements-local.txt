@@ -1,0 +1,12 @@
+# 로컬 개발 전용 추가 의존성.
+#
+# 서버가 직접 마이크를 여는 /api/audio/* 와, 서버 웹캠을 쓰는 /video_feed 를
+# 돌려볼 때만 필요하다. 배포 환경에는 마이크도 카메라도 없으므로 제외한다.
+#
+#   pip install -r requirements.txt -r requirements-local.txt
+
+-r requirements.txt
+
+openai-whisper          # 답변 전사 (기본 흐름은 브라우저 Web Speech API 사용)
+librosa                 # Pitch / Volume 산출
+pyaudio                 # 마이크 입력. macOS 는 `brew install portaudio` 선행 필요
